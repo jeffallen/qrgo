@@ -1,6 +1,7 @@
-package main
+package qrgo
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -13,13 +14,12 @@ import (
 // containing all preliminary steps the lead to the
 // result.
 type QR struct {
-	data           string
-	length         int
-	mode           int
-	version        int
-	encoding       string
-	dataCodewords  []byte
-	errorCodewords []byte
+	data     string
+	length   int
+	mode     int
+	version  int
+	encoding string
+	canvas   [][]*Cell
 }
 
 type Cell struct {
@@ -83,7 +83,22 @@ var (
 		3: {26, 22, 2, 13, 0, 0, 7}, 4: {36, 16, 4, 9, 0, 0, 7},
 		5: {46, 22, 2, 11, 2, 12, 7}, 6: {60, 28, 4, 15, 0, 0, 7},
 		7: {66, 26, 4, 13, 1, 14, 0}, 8: {86, 26, 4, 14, 2, 15, 0},
-		9: {100, 24, 4, 12, 4, 13, 0}, 10: {122, 28, 6, 15, 2, 16, 0}}
+		9: {100, 24, 4, 12, 4, 13, 0}, 10: {122, 28, 6, 15, 2, 16, 0},
+		11: {140, 24, 3, 12, 8, 13, 0}, 12: {158, 28, 7, 14, 4, 15, 0},
+		13: {180, 22, 12, 11, 4, 12, 0}, 14: {197, 24, 11, 12, 5, 13, 3},
+		15: {223, 24, 11, 12, 7, 13, 3}, 16: {253, 30, 3, 15, 13, 16, 3},
+		17: {283, 28, 2, 14, 17, 15, 3}, 18: {313, 28, 2, 14, 19, 15, 3},
+		19: {341, 26, 9, 13, 16, 14, 3}, 20: {385, 28, 15, 15, 10, 16, 3},
+		21: {406, 30, 19, 16, 6, 17, 4}, 22: {442, 24, 34, 13, 0, 0, 4},
+		23: {464, 30, 16, 15, 14, 16, 4}, 24: {514, 30, 30, 16, 2, 17, 4},
+		25: {538, 30, 22, 15, 13, 16, 4}, 26: {596, 30, 33, 16, 4, 17, 4},
+		27: {628, 30, 12, 15, 28, 16, 4}, 28: {661, 30, 11, 15, 31, 16, 3},
+		29: {701, 30, 19, 15, 26, 16, 3}, 30: {745, 30, 23, 15, 25, 16, 3},
+		31: {793, 30, 23, 15, 28, 16, 3}, 32: {845, 30, 19, 15, 35, 16, 3},
+		33: {901, 30, 11, 15, 46, 16, 3}, 34: {961, 30, 59, 16, 1, 17, 3},
+		35: {986, 30, 22, 15, 41, 16, 0}, 36: {1054, 30, 2, 15, 64, 16, 0},
+		37: {1096, 30, 24, 15, 46, 16, 0}, 38: {1142, 30, 42, 15, 32, 16, 0},
+		39: {1222, 30, 10, 15, 67, 16, 0}, 40: {1276, 30, 20, 15, 61, 16, 0}}
 
 	alignmentPatterns = map[int][]int{
 		2: {18, 18}, 3: {22, 22}, 4: {26, 26}, 5: {30, 30}, 6: {34, 34},
@@ -211,7 +226,8 @@ func getMode(data string) int {
 // Returns the qr-version corresponding to the length and
 // mode of the data string. The version lies in [1, 40]
 // the length doesn't fit a version zero is returned.
-func getVersion(length, mode int) int {
+func getVersion(data string, mode int) int {
+	length := len(data)
 	var array []int
 	if mode == numeric {
 		array = maxCharsNumeric
@@ -472,48 +488,12 @@ func interleaveError(array []byte, numErr, numB1, numB2 int) []byte {
 	return inter
 }
 
-// Print QR-Code to terminal
-func outputTerminal(canvas [][]*Cell) {
-	length, output := len(canvas), ""
-
+func upperLowerBorder(length int) string {
+	border := ""
 	for i := 0; i < length+2; i++ {
-		output += white
+		border += white
 	}
-	output += "\n"
-
-	for i := 0; i < length; i++ {
-		output += white
-		for j := 0; j < length; j++ {
-			if canvas[i][j].color == 0 {
-				output += white
-			} else {
-				output += black
-			}
-		}
-		output += white + "\n"
-	}
-
-	for i := 0; i < length+2; i++ {
-		output += white
-	}
-	output += "\n"
-
-	fmt.Println(output)
-}
-
-// Debugging
-func outputNegative(canvas [][]*Cell) {
-	length := len(canvas)
-	for i := 0; i < length; i++ {
-		for j := 0; j < length; j++ {
-			if canvas[i][j].data {
-				print(1)
-			} else {
-				print(0)
-			}
-		}
-		print("\n")
-	}
+	return border + "\n"
 }
 
 // Every QR-Code contains three finder patterns located in the
@@ -696,7 +676,6 @@ func reserveFormatInformationArea(canvas [][]*Cell, version int) {
 
 func reserveVersionInformationData(canvas [][]*Cell, version int) {
 	s := size(version)
-
 	for i := 0; i < 6; i++ {
 		canvas[s-11][i].data = false
 		canvas[s-10][i].data = false
@@ -897,7 +876,6 @@ func penalty4(masked [][]*Cell) int {
 
 	numModules := length * length
 	numBlack := 0
-
 	for r := 0; r < length; r++ {
 		for c := 0; c < length; c++ {
 			numBlack += masked[r][c].color
@@ -905,10 +883,8 @@ func penalty4(masked [][]*Cell) int {
 	}
 
 	ratio := float64(numBlack) / float64(numModules) * 100
-
 	low := int(ratio/5) * 5
 	up := (int(ratio/5) + 1) * 5
-
 	down := math.Abs(float64(low)-50) / 5.0
 	top := math.Abs(float64(up)-50) / 5.0
 
@@ -1016,7 +992,99 @@ func drawVersionInformationString(masked [][]*Cell, version int) {
 	}
 }
 
+func assembleEncoding(data string, length, mode, version int) string {
+	enc := ""
+	if mode == numeric {
+		enc = indicatorNumeric +
+			getCountIndicator(length, mode, version) +
+			encodingNumeric(data)
+	} else if mode == alpha {
+		enc = indicatorAlpha +
+			getCountIndicator(length, mode, version) +
+			encodingAlpha(data)
+	} else {
+		enc = indicatorBytes +
+			getCountIndicator(length, mode, version) + encodingBytes(data)
+	}
+	return addTerminatorPads(addTerminator(enc, version), version)
+}
+
+func interleaveEncoding(encoding string, version int) string {
+	numErr := blockInfo[version][1]
+	numB1 := blockInfo[version][2]
+	numW1 := blockInfo[version][3]
+	numB2 := blockInfo[version][4]
+	numW2 := blockInfo[version][5]
+
+	dataBytes := encodingToByteArray(encoding)
+	errorBytes := errorCorrection(dataBytes, numErr, numB1, numB2, numW1, numW2)
+	interData := interleaveData(dataBytes, numB1, numB2, numW1, numW2)
+	interError := interleaveError(errorBytes, numErr, numB1, numB2)
+
+	inter := byteArrayToEncoding(interData) + byteArrayToEncoding(interError)
+	return padRight(inter, len(inter)+blockInfo[version][6])
+}
+
+func drawQR(canvas [][]*Cell, inter string, version int) [][]*Cell {
+	placeFinderPatterns(canvas, version)
+	placeSeperators(canvas)
+	placeAlignmentPatterns(canvas, version)
+	drawTimingPattern(canvas, version)
+	drawDarkModule(canvas, version)
+	reserveFormatInformationArea(canvas, version)
+
+	if version >= 7 {
+		reserveVersionInformationData(canvas, version)
+	}
+
+	drawDataBits(canvas, inter, version)
+	winner, mask := dataMasking(canvas)
+	drawFormatInformationString(winner, mask)
+
+	if version >= 7 {
+		drawVersionInformationString(winner, version)
+	}
+	return winner
+}
+
+// Print QR-Code to terminal
+func (qr *QR) OutputTerminal() {
+	length := len(qr.canvas)
+	output := upperLowerBorder(length)
+
+	for i := 0; i < length; i++ {
+		output += white
+		for j := 0; j < length; j++ {
+			if qr.canvas[i][j].color == 0 {
+				output += white
+			} else {
+				output += black
+			}
+		}
+		output += white + "\n"
+	}
+	fmt.Println(output + upperLowerBorder(length))
+}
+
+func NewQR(data string) (*QR, error) {
+	length := len(data)
+	if length == 0 {
+		return nil, errors.New("Empty data input.")
+	}
+
+	mode := getMode(data)
+	version := getVersion(data, mode)
+	encoding := assembleEncoding(data, length, mode, version)
+	inter := interleaveEncoding(encoding, version)
+	winner := drawQR(initCanvas(size(version)), inter, version)
+
+	return &QR{data: data, length: length, mode: mode, version: version,
+		encoding: encoding, canvas: winner}, nil
+}
+
 func main() {
 	in := os.Args[1]
-	fmt.Println(os.Args[0], in)
+	qr, _ := NewQR(in)
+
+	qr.OutputTerminal()
 }
