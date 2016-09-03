@@ -1,4 +1,4 @@
-package qrgo
+package main
 
 import (
 	"testing"
