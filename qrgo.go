@@ -1,10 +1,9 @@
-package main
+package qrgo
 
 import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -14,12 +13,23 @@ import (
 // containing all preliminary steps the lead to the
 // result.
 type QR struct {
-	data     string
-	length   int
-	mode     int
-	version  int
-	encoding string
-	canvas   [][]*Cell
+	Data    string
+	Length  int
+	Mode    int
+	Version int
+	Modules int
+
+	Errors int
+	Block1 int
+	Words1 int
+	Block2 int
+	Words2 int
+
+	Encoding    []byte
+	Correction  []byte
+	Interleaved string
+	Mask        int
+	Canvas      [][]*Cell
 }
 
 type Cell struct {
@@ -33,13 +43,13 @@ const (
 	regexNumeric = "^.[0-9]*$"                   // [0,9]
 	regexAlpha   = "^.[0-9A-Z /.:%+\\$\\-\\*]*$" // [0,9] | [A,Z] | {/.:%+$-*}
 
-	numeric = 1
-	alpha   = 2
-	bytes   = 4
+	numeric  = 1
+	alpha    = 2
+	byteMode = 4
 
-	indicatorNumeric = "0001"
-	indicatorAlpha   = "0010"
-	indicatorBytes   = "0100"
+	indNumeric = "0001"
+	indAlpha   = "0010"
+	indBytes   = "0100"
 
 	versions = 40
 
@@ -87,7 +97,8 @@ var (
 		5: {108, 26, 1, 108, 0, 0, 7}, 6: {136, 18, 2, 68, 0, 0, 7},
 		7: {156, 20, 2, 78, 0, 0, 0}, 8: {194, 24, 2, 97, 0, 0, 0},
 		9: {232, 30, 2, 116, 0, 0, 0}, 10: {274, 18, 2, 68, 2, 69, 0},
-		11: {324, 20, 4, 81, 0, 0, 0}}
+		11: {324, 20, 4, 81, 0, 0, 0}, 12: {370, 24, 2, 92, 2, 93, 0},
+		13: {428, 26, 4, 107, 0, 0, 0}, 14: {461, 30, 3, 115, 1, 116, 0}}
 
 	alignmentPatterns = map[int][]int{
 		2: {18, 18}, 3: {22, 22}, 4: {26, 26}, 5: {30, 30}, 6: {34, 34},
@@ -112,11 +123,6 @@ var (
 		"000111110010010100", "001000010110111100", "001001101010011001",
 		"001010010011010011", "001011101111110110", "001100011101100010"}
 )
-
-// Return number of modules depending on version.
-//func size(version int) int {
-//return ((version - 1) * 4) + 21
-//}
 
 var size int
 
@@ -196,55 +202,39 @@ func byteArrayToEncoding(array []byte) string {
 	return encoding
 }
 
-// Returns the appropriate mode for a given
-// data string.
-//
-//		Numeric (1): All string only consisting of numbers.
-//      Alpha   (2): All strings consisting of numbers, upper-
-//					 case letters and {/.:%+$-*}.
-//		Bytes	(4): All strings containing ASCII-characters.
-//
-func getMode(data string) int {
-	rNumeric, _ := regexp.Compile(regexNumeric)
-	rAlpha, _ := regexp.Compile(regexAlpha)
-
-	if rNumeric.MatchString(data) {
-		return numeric
-	} else if rAlpha.MatchString(data) {
-		return alpha
-	}
-	return bytes
-}
-
-// Returns the qr-version corresponding to the length and
-// mode of the data string. The version lies in [1, 40]
-// the length doesn't fit a version zero is returned.
-func getVersion(data string, mode int) int {
-	length := len(data)
-	var array []int
-	if mode == numeric {
-		array = maxCharsNumeric
-	} else if mode == alpha {
-		array = maxCharsAlpha
-	} else {
-		array = maxCharsBytes
-	}
-
-	// Binary search through version table.
+func binarySearch(array []int, value int) int {
 	low, high := 0, versions
 	for low != high {
 		mid := (low + high) / 2
-		if array[mid] < length {
+		if array[mid] < value {
 			low = mid + 1
 		} else {
 			high = mid
 		}
 	}
+	return low
+}
 
-	if low == versions {
-		return 0
+func (qr *QR) mode() {
+	rNumeric, _ := regexp.Compile(regexNumeric)
+	rAlpha, _ := regexp.Compile(regexAlpha)
+
+	if rNumeric.MatchString(qr.Data) {
+		qr.Mode = numeric
+	} else if rAlpha.MatchString(qr.Data) {
+		qr.Mode = alpha
 	} else {
-		return low + 1
+		qr.Mode = byteMode
+	}
+}
+
+func (qr *QR) version() {
+	if qr.Mode == numeric {
+		qr.Version = binarySearch(maxCharsNumeric, qr.Length) + 1
+	} else if qr.Mode == alpha {
+		qr.Version = binarySearch(maxCharsAlpha, qr.Length) + 1
+	} else {
+		qr.Version = binarySearch(maxCharsBytes, qr.Length) + 1
 	}
 }
 
@@ -253,21 +243,21 @@ func getVersion(data string, mode int) int {
 // to the given length, mode and version of the data string.
 //
 //		Version [1, 9]:
-//			Numeric:	10 bytes
-//			Alpha: 		9 bytes
-//			Bytes:		8 bytes
+//			Numeric:	10 byteMode
+//			Alpha: 		9 byteMode
+//			Bytes:		8 byteMode
 //
 //		Version [10, 26]:
-//			Numeric:	12 bytes
-//			Alpha:		11 bytes
-//			Bytes:		16 bytes
+//			Numeric:	12 byteMode
+//			Alpha:		11 byteMode
+//			Bytes:		16 byteMode
 //
 //		Version [26, 40]:
-//			Numeric:	14 bytes
-//			Alpha:		13 bytes
-//			Bytes:		16 bytes
+//			Numeric:	14 byteMode
+//			Alpha:		13 byteMode
+//			Bytes:		16 byteMode
 //
-func getCountIndicator(length, mode, version int) string {
+func indCount(length, mode, version int) string {
 	count := strconv.FormatInt(int64(length), 2)
 	if version >= 1 && version <= 9 {
 		if mode == numeric {
@@ -306,7 +296,7 @@ func getCountIndicator(length, mode, version int) string {
 //			530 -> 1000010010
 //			9 	-> 1001
 //
-func encodingNumeric(data string) string {
+func encNumeric(data string) string {
 	i, encoding := 0, ""
 	for ; i <= len(data)-3; i += 3 {
 		encoding += stringToBinary(data[i : i+3])
@@ -326,7 +316,7 @@ func encodingNumeric(data string) string {
 //			E -> 14
 //			(45 * 17) + 14 = 779 = 01100001011
 //
-func encodingAlpha(data string) string {
+func encAlpha(data string) string {
 	i, encoding := 0, ""
 	for ; i <= len(data)-2; i += 2 {
 		pair := data[i : i+2]
@@ -348,7 +338,7 @@ func encodingAlpha(data string) string {
 //		H -> 0x48 -> 01001000
 //		e -> 0x65 -> 01100101
 //
-func encodingBytes(data string) string {
+func encBytes(data string) string {
 	encoding := ""
 	for _, c := range data {
 		ascii := int64(c)
@@ -359,33 +349,28 @@ func encodingBytes(data string) string {
 
 // After encoding the data string it needs to be right-padded
 // until the length is a multiple of eight.
-func addTerminator(encoding string, version int) string {
+// TODO commments
+func terminator(encoding string, version int) []byte {
 	length := len(encoding)
-	bits := blockInfo[version][0] * 8
+	blocks := blockInfo[version][0]
 
-	if bits-length == 0 {
-		return encoding
+	if (blocks*8)-length == 0 {
+		return encodingToByteArray(encoding)
 	}
 
 	rest := 8 - (length % 8)
-	return padRight(encoding, length+rest)
-}
+	padding := padRight(encoding, length+rest)
 
-// If after appending the terminator bits the string is still not
-// at the full capacity the terminator pads {11101100, 00010001}
-// are added alternately until the maximum length is reached.
-func addTerminatorPads(encoding string, version int) string {
-	numPads := blockInfo[version][0] - len(encoding)/8
-	padding := encoding
+	numPads := blocks - len(padding)/8
 	for i := 0; i < numPads; i++ {
 		padding = padding + terminatorPads[i%2]
 	}
-	return padding
+	return encodingToByteArray(padding)
 }
 
 // The data byte-array has to be interleaved according to the QR-Code
-// specification. In simplified terms the first bytes of every blocks
-// are aligned before moving to the second bytes. Data strings only
+// specification. In simplified terms the first byteMode of every blocks
+// are aligned before moving to the second byteMode. Data strings only
 // consisting of a single block are not interleaved.
 //
 //		Group1, Block1: [1, 2, 3, 4]
@@ -434,7 +419,7 @@ func interleaveData(array []byte, blocks1, blocks2, words1, words2 int) []byte {
 
 // For each block in a data string a certain number error correction
 // words are generated applying the Reed-Solomon standard.
-func errorCorrection(array []byte, numErr, numB1, numB2, numW1, numW2 int) []byte {
+func correction(array []byte, numErr, numB1, numB2, numW1, numW2 int) []byte {
 	correction := make([]byte, numErr*(numB1+numB2))
 	field := NewField(0x11d, 2) // Reed-Solomon parameters for QR-Codes.
 	enc := NewRSEncoder(field, numErr)
@@ -460,7 +445,7 @@ func errorCorrection(array []byte, numErr, numB1, numB2, numW1, numW2 int) []byt
 }
 
 // The error correction words are interleaved in the same way as the
-// data bytes. Since all blocks have the same number of error words, it
+// data byteMode. Since all blocks have the same number of error words, it
 // boils down to a transposition.
 //
 //		[1, 2, 3, 4][5, 6, 7, 8]
@@ -483,10 +468,10 @@ func interleaveError(array []byte, numErr, numB1, numB2 int) []byte {
 
 // Every QR-Code contains three finder patterns located in the
 // two upper and bottom-left corners.
-func placeFinderPatterns(canvas [][]*Cell, version int) {
-	drawPattern(canvas, 0, 0, 7)
-	drawPattern(canvas, size-7, 0, 7)
-	drawPattern(canvas, 0, size-7, 7)
+func (qr *QR) plaaceFiinderPatterns() {
+	drawPattern(qr.Canvas, 0, 0, 7)
+	drawPattern(qr.Canvas, size-7, 0, 7)
+	drawPattern(qr.Canvas, 0, size-7, 7)
 }
 
 // A finder pattern is 7x7 square with a black border followed by
@@ -529,10 +514,10 @@ func drawPattern(canvas [][]*Cell, row, col, size int) {
 
 // The seperators are white lines surrounding the three finder
 // patterns.
-func placeSeperators(canvas [][]*Cell) {
-	drawSeperator(canvas, 7, 7, -1, -1)
-	drawSeperator(canvas, 7, len(canvas)-8, -1, 1)
-	drawSeperator(canvas, len(canvas)-8, 7, 1, -1)
+func (qr *QR) plaaceSeeperator() {
+	drawSeperator(qr.Canvas, 7, 7, -1, -1)
+	drawSeperator(qr.Canvas, 7, qr.Modules-8, -1, 1)
+	drawSeperator(qr.Canvas, qr.Modules-8, 7, 1, -1)
 }
 
 // Example of the seperator for the top-left finder pattern.
@@ -565,11 +550,10 @@ func drawSeperator(canvas [][]*Cell, row, col, dr, dc int) {
 // Every QR-Code that is not of version 1, has one or more
 // alignmentPatterns. The positions of those patterns can
 // be found in the alignmentPattern table.
-func placeAlignmentPatterns(canvas [][]*Cell, version int) {
-	patterns := alignmentPatterns[version]
-
+func (qr *QR) plaaceAlllignmentPatterns() {
+	patterns := alignmentPatterns[qr.Version]
 	for i := 0; i < len(patterns)-1; i += 2 {
-		drawPattern(canvas, patterns[i]-2, patterns[i+1]-2, 5)
+		drawPattern(qr.Canvas, patterns[i]-2, patterns[i+1]-2, 5)
 	}
 }
 
@@ -596,20 +580,19 @@ func placeAlignmentPatterns(canvas [][]*Cell, version int) {
 //		1000001
 //		1111111
 //
-func drawTimingPattern(canvas [][]*Cell, version int) {
-	length := size - 14
-
+func (qr *QR) draawTimiingPattern() {
+	length := qr.Modules - 14
 	for i := 6; i < 6+length; i++ {
 		if i%2 == 0 {
-			canvas[6][i].color = 1
-			canvas[i][6].color = 1
+			qr.Canvas[6][i].color = 1
+			qr.Canvas[i][6].color = 1
 		} else {
-			canvas[6][i].color = 0
-			canvas[i][6].color = 0
+			qr.Canvas[6][i].color = 0
+			qr.Canvas[i][6].color = 0
 		}
 
-		canvas[6][i].data = false
-		canvas[i][6].data = false
+		qr.Canvas[6][i].data = false
+		qr.Canvas[i][6].data = false
 	}
 }
 
@@ -620,83 +603,73 @@ func drawDarkModule(canvas [][]*Cell, version int) {
 	canvas[r][8].data = false
 }
 
-func reserveFormatInformationArea(canvas [][]*Cell, version int) {
-	canvas[8][0].data = false
-	canvas[8][1].data = false
-	canvas[8][2].data = false
-	canvas[8][3].data = false
-	canvas[8][4].data = false
-	canvas[8][5].data = false
-	canvas[8][7].data = false
-	canvas[8][8].data = false
-
-	canvas[0][8].data = false
-	canvas[1][8].data = false
-	canvas[2][8].data = false
-	canvas[3][8].data = false
-	canvas[4][8].data = false
-	canvas[5][8].data = false
-	canvas[7][8].data = false
-
-	canvas[8][size-8].data = false
-	canvas[8][size-7].data = false
-	canvas[8][size-6].data = false
-	canvas[8][size-5].data = false
-	canvas[8][size-4].data = false
-	canvas[8][size-3].data = false
-	canvas[8][size-2].data = false
-	canvas[8][size-1].data = false
-
-	canvas[size-7][8].data = false
-	canvas[size-6][8].data = false
-	canvas[size-5][8].data = false
-	canvas[size-4][8].data = false
-	canvas[size-3][8].data = false
-	canvas[size-2][8].data = false
-	canvas[size-1][8].data = false
+func (qr *QR) draawDarkMoodule() {
+	r := (4 * qr.Version) + 9
+	qr.Canvas[r][8].color = 1
+	qr.Canvas[r][8].data = false
 }
 
-func reserveVersionInformationData(canvas [][]*Cell, version int) {
-	for i := 0; i < 6; i++ {
-		canvas[size-11][i].data = false
-		canvas[size-10][i].data = false
-		canvas[size-9][i].data = false
+func (qr *QR) reeeserveFormatInnformationArea() {
+	for i := 0; i <= 8; i++ {
+		if i != 6 {
+			qr.Canvas[8][i].data = false
+		}
+		if i != 0 {
+			qr.Canvas[8][qr.Modules-i].data = false
+		}
+	}
 
-		canvas[i][size-9].data = false
-		canvas[i][size-10].data = false
-		canvas[i][size-11].data = false
+	for i := 0; i <= 7; i++ {
+		if i != 6 {
+			qr.Canvas[i][8].data = false
+		}
+		if i != 0 {
+			qr.Canvas[qr.Modules-i][8].data = false
+		}
 	}
 }
 
-func drawDataBits(canvas [][]*Cell, data string, version int) {
+func (qr *QR) reeserveVersionInnformationData() {
+	for i := 0; i < 6; i++ {
+		qr.Canvas[qr.Modules-11][i].data = false
+		qr.Canvas[qr.Modules-10][i].data = false
+		qr.Canvas[qr.Modules-9][i].data = false
+
+		qr.Canvas[i][qr.Modules-9].data = false
+		qr.Canvas[i][qr.Modules-10].data = false
+		qr.Canvas[i][qr.Modules-11].data = false
+	}
+}
+
+func (qr *QR) draawDaataBits() {
 	i, up := 0, true
-	for c := size - 1; c > 0; c -= 2 {
+	for c := qr.Modules - 1; c > 0; c -= 2 {
 		if c == 6 {
 			c++
 		} else {
 			if up {
-				for r := size - 1; r >= 0; r-- {
-					if canvas[r][c].data {
-						wb, _ := strconv.Atoi(string(data[i]))
-						canvas[r][c].color = wb
+				for r := qr.Modules - 1; r >= 0; r-- {
+					if qr.Canvas[r][c].data {
+						wb, _ := strconv.Atoi(string(qr.Interleaved[i]))
+						qr.Canvas[r][c].color = wb
 						i++
 					}
-					if canvas[r][c-1].data {
-						wb, _ := strconv.Atoi(string(data[i]))
-						canvas[r][c-1].color = wb
+					if qr.Canvas[r][c-1].data {
+						wb, _ := strconv.Atoi(string(qr.Interleaved[i]))
+						qr.Canvas[r][c-1].color = wb
 						i++
 					}
 				}
 			} else {
-				for r := 0; r < size; r++ {
-					if canvas[r][c].data {
-						wb, _ := strconv.Atoi(string(data[i]))
-						canvas[r][c].color = wb
+				for r := 0; r < qr.Modules; r++ {
+					if qr.Canvas[r][c].data {
+						wb, _ := strconv.Atoi(string(qr.Interleaved[i]))
+						qr.Canvas[r][c].color = wb
 						i++
 					}
-					if canvas[r][c-1].data {
-						wb, _ := strconv.Atoi(string(data[i]))
-						canvas[r][c-1].color = wb
+					if qr.Canvas[r][c-1].data {
+						wb, _ := strconv.Atoi(string(qr.Interleaved[i]))
+						qr.Canvas[r][c-1].color = wb
 						i++
 					}
 				}
@@ -706,14 +679,14 @@ func drawDataBits(canvas [][]*Cell, data string, version int) {
 	}
 }
 
-func initCanvas(length int) [][]*Cell {
-	canvas := make([][]*Cell, length)
+func iiinitCanvas(modules int) [][]*Cell {
+	canvas := make([][]*Cell, modules)
 	for i, _ := range canvas {
-		canvas[i] = make([]*Cell, length)
+		canvas[i] = make([]*Cell, modules)
 	}
 
-	for i := 0; i < len(canvas); i++ {
-		for j := 0; j < len(canvas); j++ {
+	for i := 0; i < modules; i++ {
+		for j := 0; j < modules; j++ {
 			canvas[i][j] = &Cell{0, true}
 		}
 	}
@@ -765,7 +738,7 @@ func mask7(row, col int) bool {
 
 func maskCanvas(canvas [][]*Cell, fn mask) [][]*Cell {
 	length := len(canvas)
-	masked := initCanvas(length)
+	masked := iiinitCanvas(length)
 	deepCopyCanvas(canvas, masked)
 
 	for r := 0; r < length; r++ {
@@ -778,7 +751,7 @@ func maskCanvas(canvas [][]*Cell, fn mask) [][]*Cell {
 	return masked
 }
 
-func penalty1(masked [][]*Cell) int {
+func pen1(masked [][]*Cell) int {
 	length := len(masked)
 
 	total := 0
@@ -806,7 +779,7 @@ func penalty1(masked [][]*Cell) int {
 	return total
 }
 
-func penalty2(masked [][]*Cell) int {
+func pen2(masked [][]*Cell) int {
 	length := len(masked)
 
 	total := 0
@@ -824,7 +797,7 @@ func penalty2(masked [][]*Cell) int {
 
 // Counts the number of overlapping substring within an
 // other string.
-func countSubstringOccurrences(s, sub string) int {
+func substringOccurrences(s, sub string) int {
 	sLength, subLength := len(s), len(sub)
 	total := 0
 	for i := 0; i < sLength-subLength+1; i++ {
@@ -835,7 +808,7 @@ func countSubstringOccurrences(s, sub string) int {
 	return total
 }
 
-func penalty3(masked [][]*Cell) int {
+func pen3(masked [][]*Cell) int {
 	length := len(masked)
 
 	total := 0
@@ -845,13 +818,13 @@ func penalty3(masked [][]*Cell) int {
 			row += strconv.Itoa(masked[i][j].color)
 			col += strconv.Itoa(masked[j][i].color)
 		}
-		total += countSubstringOccurrences(row, penaltySequences[0]) * 40
-		total += countSubstringOccurrences(col, penaltySequences[1]) * 40
+		total += substringOccurrences(row, penaltySequences[0]) * 40
+		total += substringOccurrences(col, penaltySequences[1]) * 40
 	}
 	return total
 }
 
-func penalty4(masked [][]*Cell) int {
+func pen4(masked [][]*Cell) int {
 	length := len(masked)
 
 	numModules := length * length
@@ -862,6 +835,7 @@ func penalty4(masked [][]*Cell) int {
 		}
 	}
 
+	// TODO
 	ratio := float64(numBlack) / float64(numModules) * 100
 	low := int(ratio/5) * 5
 	up := (int(ratio/5) + 1) * 5
@@ -875,156 +849,77 @@ func penalty4(masked [][]*Cell) int {
 	}
 }
 
-func dataMasking(canvas [][]*Cell) ([][]*Cell, int) {
+func (qr *QR) daataMaasking() {
 	winner, mask, min := [][]*Cell{}, -1, math.MaxInt64
 	for i := 0; i < 8; i++ {
-		masked := maskCanvas(canvas, masks[i])
-		penalty := penalty1(masked)
-		penalty += penalty2(masked)
-		penalty += penalty3(masked)
-		penalty += penalty4(masked)
+		masked := maskCanvas(qr.Canvas, masks[i])
+		penalty := pen1(masked) + pen2(masked) + pen3(masked) + pen4(masked)
 		if penalty < min {
 			winner = masked
 			mask = i
 			min = penalty
 		}
 	}
-	return winner, mask
+	qr.Canvas = winner
+	qr.Mask = mask
 }
 
-func drawFormatInformationString(masked [][]*Cell, mask int) {
-	length := len(masked)
-	fis := formatInformationStrings[mask]
+func (qr *QR) draawFoormatInformationString() {
+	fis := formatInformationStrings[qr.Mask]
 
-	wb, _ := strconv.Atoi(string(fis[0]))
-	masked[8][0].color = wb
-	masked[length-1][8].color = wb
+	for i := 0; i <= 6; i++ {
+		num, _ := strconv.Atoi(string(fis[i]))
+		if i == 6 {
+			qr.Canvas[8][i+1].color = num
+		} else {
+			qr.Canvas[8][i].color = num
+		}
+		qr.Canvas[qr.Modules-(i+1)][8].color = num
+	}
 
-	wb, _ = strconv.Atoi(string(fis[1]))
-	masked[8][1].color = wb
-	masked[length-2][8].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[2]))
-	masked[8][2].color = wb
-	masked[length-3][8].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[3]))
-	masked[8][3].color = wb
-	masked[length-4][8].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[4]))
-	masked[8][4].color = wb
-	masked[length-5][8].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[5]))
-	masked[8][5].color = wb
-	masked[length-6][8].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[6]))
-	masked[8][7].color = wb
-	masked[length-7][8].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[7]))
-	masked[8][8].color = wb
-	masked[8][length-8].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[8]))
-	masked[7][8].color = wb
-	masked[8][length-7].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[9]))
-	masked[5][8].color = wb
-	masked[8][length-6].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[10]))
-	masked[4][8].color = wb
-	masked[8][length-5].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[11]))
-	masked[3][8].color = wb
-	masked[8][length-4].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[12]))
-	masked[2][8].color = wb
-	masked[8][length-3].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[13]))
-	masked[1][8].color = wb
-	masked[8][length-2].color = wb
-
-	wb, _ = strconv.Atoi(string(fis[14]))
-	masked[0][8].color = wb
-	masked[8][length-1].color = wb
+	for i := 0; i <= 7; i++ {
+		num, _ := strconv.Atoi(string(fis[i+7]))
+		if i != 2 {
+			qr.Canvas[8-i][8].color = num
+			qr.Canvas[8][qr.Modules-(8-i)].color = num
+		}
+	}
 }
 
-func drawVersionInformationString(masked [][]*Cell, version int) {
-	length := len(masked)
-	vis := versionInformationStrings[version-7]
+func (qr *QR) draawVeersionInformationString() {
+	vis := versionInformationStrings[qr.Version-7]
 
 	x := 0
 	for i := 5; i >= 0; i-- {
 		for j := 0; j < 3; j++ {
 			wb, _ := strconv.Atoi(string(vis[x]))
-			masked[length-(9+j)][i].color = wb
-			masked[i][length-(9+j)].color = wb
+			qr.Canvas[qr.Modules-(9+j)][i].color = wb
+			qr.Canvas[i][qr.Modules-(9+j)].color = wb
 			x++
 		}
 	}
 }
 
-func assembleEncoding(data string, length, mode, version int) string {
-	enc := ""
-	if mode == numeric {
-		enc = indicatorNumeric +
-			getCountIndicator(length, mode, version) +
-			encodingNumeric(data)
-	} else if mode == alpha {
-		enc = indicatorAlpha +
-			getCountIndicator(length, mode, version) +
-			encodingAlpha(data)
+func (qr *QR) encoding() {
+	if qr.Mode == numeric {
+		qr.Encoding = terminator(indNumeric+indCount(qr.Length, qr.Mode, qr.Version)+
+			encNumeric(qr.Data), qr.Version)
+	} else if qr.Mode == alpha {
+		qr.Encoding = terminator(indAlpha+indCount(qr.Length, qr.Mode, qr.Version)+
+			encAlpha(qr.Data), qr.Version)
 	} else {
-		enc = indicatorBytes +
-			getCountIndicator(length, mode, version) + encodingBytes(data)
+		qr.Encoding = terminator(indBytes+indCount(qr.Length, qr.Mode, qr.Version)+
+			encBytes(qr.Data), qr.Version)
 	}
-	return addTerminatorPads(addTerminator(enc, version), version)
 }
 
-func interleaveEncoding(encoding string, version int) string {
-	numErr := blockInfo[version][1]
-	numB1 := blockInfo[version][2]
-	numW1 := blockInfo[version][3]
-	numB2 := blockInfo[version][4]
-	numW2 := blockInfo[version][5]
-
-	dataBytes := encodingToByteArray(encoding)
-	errorBytes := errorCorrection(dataBytes, numErr, numB1, numB2, numW1, numW2)
-	interData := interleaveData(dataBytes, numB1, numB2, numW1, numW2)
-	interError := interleaveError(errorBytes, numErr, numB1, numB2)
+func (qr *QR) interleave() {
+	errorBytes := correction(qr.Encoding, qr.Errors, qr.Block1, qr.Block2, qr.Words1, qr.Words2)
+	interData := interleaveData(qr.Encoding, qr.Block1, qr.Block2, qr.Words1, qr.Words2)
+	interError := interleaveError(errorBytes, qr.Errors, qr.Block1, qr.Block2)
 
 	inter := byteArrayToEncoding(interData) + byteArrayToEncoding(interError)
-	return padRight(inter, len(inter)+blockInfo[version][6])
-}
-
-func drawQR(canvas [][]*Cell, inter string, version int) [][]*Cell {
-	placeFinderPatterns(canvas, version)
-	placeSeperators(canvas)
-	placeAlignmentPatterns(canvas, version)
-	drawTimingPattern(canvas, version)
-	drawDarkModule(canvas, version)
-	reserveFormatInformationArea(canvas, version)
-
-	if version >= 7 {
-		reserveVersionInformationData(canvas, version)
-	}
-
-	drawDataBits(canvas, inter, version)
-	winner, mask := dataMasking(canvas)
-	drawFormatInformationString(winner, mask)
-
-	if version >= 7 {
-		drawVersionInformationString(winner, version)
-	}
-	return winner
+	qr.Interleaved = padRight(inter, len(inter)+blockInfo[qr.Version][6])
 }
 
 func upperLowerBorder(length int) string {
@@ -1037,13 +932,13 @@ func upperLowerBorder(length int) string {
 
 // Print QR-Code to terminal
 func (qr *QR) OutputTerminal() {
-	length := len(qr.canvas)
+	length := len(qr.Canvas)
 	output := upperLowerBorder(length)
 
 	for i := 0; i < length; i++ {
 		output += white
 		for j := 0; j < length; j++ {
-			if qr.canvas[i][j].color == 0 {
+			if qr.Canvas[i][j].color == 0 {
 				output += white
 			} else {
 				output += black
@@ -1060,22 +955,39 @@ func NewQR(data string) (*QR, error) {
 		return nil, errors.New("Empty data input.")
 	}
 
-	mode := getMode(data)
-	version := getVersion(data, mode)
+	qr := QR{Data: data, Length: length}
+	qr.mode()
+	qr.version()
+	qr.Modules = ((qr.Version-1)*4 + 21)
+	size = qr.Modules
 
-	size = ((version - 1) * 4) + 21
+	qr.Errors = blockInfo[qr.Version][1]
+	qr.Block1 = blockInfo[qr.Version][2]
+	qr.Words1 = blockInfo[qr.Version][3]
+	qr.Block2 = blockInfo[qr.Version][4]
+	qr.Words2 = blockInfo[qr.Version][5]
 
-	encoding := assembleEncoding(data, length, mode, version)
-	inter := interleaveEncoding(encoding, version)
-	winner := drawQR(initCanvas(size), inter, version)
+	qr.encoding()
+	qr.interleave()
 
-	return &QR{data: data, length: length, mode: mode, version: version,
-		encoding: encoding, canvas: winner}, nil
-}
+	qr.Canvas = iiinitCanvas(qr.Modules)
+	qr.plaaceFiinderPatterns()
+	qr.plaaceSeeperator()
+	qr.plaaceAlllignmentPatterns()
+	qr.draawTimiingPattern()
+	qr.draawDarkMoodule()
+	qr.reeeserveFormatInnformationArea()
 
-func main() {
-	in := os.Args[1]
-	qr, _ := NewQR(in)
+	if qr.Version >= 7 {
+		qr.reeserveVersionInnformationData()
+	}
 
-	qr.OutputTerminal()
+	qr.draawDaataBits()
+	qr.daataMaasking()
+	qr.draawFoormatInformationString()
+
+	if qr.Version >= 7 {
+		qr.draawVeersionInformationString()
+	}
+	return &qr, nil
 }
