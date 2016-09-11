@@ -468,7 +468,7 @@ func interleaveError(array []byte, numErr, numB1, numB2 int) []byte {
 
 // Every QR-Code contains three finder patterns located in the
 // two upper and bottom-left corners.
-func (qr *QR) plaaceFiinderPatterns() {
+func (qr *QR) placeFinderPatterns() {
 	drawPattern(qr.Canvas, 0, 0, 7)
 	drawPattern(qr.Canvas, size-7, 0, 7)
 	drawPattern(qr.Canvas, 0, size-7, 7)
@@ -514,7 +514,7 @@ func drawPattern(canvas [][]*Cell, row, col, size int) {
 
 // The seperators are white lines surrounding the three finder
 // patterns.
-func (qr *QR) plaaceSeeperator() {
+func (qr *QR) placeSeparator() {
 	drawSeperator(qr.Canvas, 7, 7, -1, -1)
 	drawSeperator(qr.Canvas, 7, qr.Modules-8, -1, 1)
 	drawSeperator(qr.Canvas, qr.Modules-8, 7, 1, -1)
@@ -550,7 +550,7 @@ func drawSeperator(canvas [][]*Cell, row, col, dr, dc int) {
 // Every QR-Code that is not of version 1, has one or more
 // alignmentPatterns. The positions of those patterns can
 // be found in the alignmentPattern table.
-func (qr *QR) plaaceAlllignmentPatterns() {
+func (qr *QR) placeAlignmentPatterns() {
 	patterns := alignmentPatterns[qr.Version]
 	for i := 0; i < len(patterns)-1; i += 2 {
 		drawPattern(qr.Canvas, patterns[i]-2, patterns[i+1]-2, 5)
@@ -580,7 +580,7 @@ func (qr *QR) plaaceAlllignmentPatterns() {
 //		1000001
 //		1111111
 //
-func (qr *QR) draawTimiingPattern() {
+func (qr *QR) drawTimingPattern() {
 	length := qr.Modules - 14
 	for i := 6; i < 6+length; i++ {
 		if i%2 == 0 {
@@ -603,13 +603,13 @@ func drawDarkModule(canvas [][]*Cell, version int) {
 	canvas[r][8].data = false
 }
 
-func (qr *QR) draawDarkMoodule() {
+func (qr *QR) drawDarkModule() {
 	r := (4 * qr.Version) + 9
 	qr.Canvas[r][8].color = 1
 	qr.Canvas[r][8].data = false
 }
 
-func (qr *QR) reeeserveFormatInnformationArea() {
+func (qr *QR) reserveFormatInformationArea() {
 	for i := 0; i <= 8; i++ {
 		if i != 6 {
 			qr.Canvas[8][i].data = false
@@ -629,7 +629,7 @@ func (qr *QR) reeeserveFormatInnformationArea() {
 	}
 }
 
-func (qr *QR) reeserveVersionInnformationData() {
+func (qr *QR) reserveVersionInformationData() {
 	for i := 0; i < 6; i++ {
 		qr.Canvas[qr.Modules-11][i].data = false
 		qr.Canvas[qr.Modules-10][i].data = false
@@ -641,7 +641,7 @@ func (qr *QR) reeserveVersionInnformationData() {
 	}
 }
 
-func (qr *QR) draawDaataBits() {
+func (qr *QR) drawDataBits() {
 	i, up := 0, true
 	for c := qr.Modules - 1; c > 0; c -= 2 {
 		if c == 6 {
@@ -679,7 +679,7 @@ func (qr *QR) draawDaataBits() {
 	}
 }
 
-func iiinitCanvas(modules int) [][]*Cell {
+func newCanvas(modules int) [][]*Cell {
 	canvas := make([][]*Cell, modules)
 	for i, _ := range canvas {
 		canvas[i] = make([]*Cell, modules)
@@ -693,7 +693,7 @@ func iiinitCanvas(modules int) [][]*Cell {
 	return canvas
 }
 
-func deepCopyCanvas(canvas, copy [][]*Cell) {
+func copyCanvas(canvas, copy [][]*Cell) {
 	length := len(canvas)
 	for r := 0; r < length; r++ {
 		for c := 0; c < length; c++ {
@@ -738,8 +738,8 @@ func mask7(row, col int) bool {
 
 func maskCanvas(canvas [][]*Cell, fn mask) [][]*Cell {
 	length := len(canvas)
-	masked := iiinitCanvas(length)
-	deepCopyCanvas(canvas, masked)
+	masked := newCanvas(length)
+	copyCanvas(canvas, masked)
 
 	for r := 0; r < length; r++ {
 		for c := 0; c < length; c++ {
@@ -752,9 +752,7 @@ func maskCanvas(canvas [][]*Cell, fn mask) [][]*Cell {
 }
 
 func pen1(masked [][]*Cell) int {
-	length := len(masked)
-
-	total := 0
+	total, length := 0, len(masked)
 	for r := 0; r < length; r++ {
 		count, prev, diff := 0, -1, 0
 		for c := 0; c < length; c++ {
@@ -780,9 +778,7 @@ func pen1(masked [][]*Cell) int {
 }
 
 func pen2(masked [][]*Cell) int {
-	length := len(masked)
-
-	total := 0
+	total, length := 0, len(masked)
 	for r := 0; r < 1; r++ {
 		for c := 0; c < length-1; c++ {
 			sum := masked[r][c].color + masked[r][c+1].color +
@@ -809,9 +805,7 @@ func substringOccurrences(s, sub string) int {
 }
 
 func pen3(masked [][]*Cell) int {
-	length := len(masked)
-
-	total := 0
+	total, length := 0, len(masked)
 	for i := 0; i < length; i++ {
 		row, col := "", ""
 		for j := 0; j < length; j++ {
@@ -849,7 +843,7 @@ func pen4(masked [][]*Cell) int {
 	}
 }
 
-func (qr *QR) daataMaasking() {
+func (qr *QR) dataMasking() {
 	winner, mask, min := [][]*Cell{}, -1, math.MaxInt64
 	for i := 0; i < 8; i++ {
 		masked := maskCanvas(qr.Canvas, masks[i])
@@ -864,9 +858,8 @@ func (qr *QR) daataMaasking() {
 	qr.Mask = mask
 }
 
-func (qr *QR) draawFoormatInformationString() {
+func (qr *QR) drawFormatInformationString() {
 	fis := formatInformationStrings[qr.Mask]
-
 	for i := 0; i <= 6; i++ {
 		num, _ := strconv.Atoi(string(fis[i]))
 		if i == 6 {
@@ -886,7 +879,7 @@ func (qr *QR) draawFoormatInformationString() {
 	}
 }
 
-func (qr *QR) draawVeersionInformationString() {
+func (qr *QR) drawVersionInformationString() {
 	vis := versionInformationStrings[qr.Version-7]
 
 	x := 0
@@ -970,24 +963,24 @@ func NewQR(data string) (*QR, error) {
 	qr.encoding()
 	qr.interleave()
 
-	qr.Canvas = iiinitCanvas(qr.Modules)
-	qr.plaaceFiinderPatterns()
-	qr.plaaceSeeperator()
-	qr.plaaceAlllignmentPatterns()
-	qr.draawTimiingPattern()
-	qr.draawDarkMoodule()
-	qr.reeeserveFormatInnformationArea()
+	qr.Canvas = newCanvas(qr.Modules)
+	qr.placeFinderPatterns()
+	qr.placeSeparator()
+	qr.placeAlignmentPatterns()
+	qr.drawTimingPattern()
+	qr.drawDarkModule()
+	qr.reserveFormatInformationArea()
 
 	if qr.Version >= 7 {
-		qr.reeserveVersionInnformationData()
+		qr.reserveVersionInformationData()
 	}
 
-	qr.draawDaataBits()
-	qr.daataMaasking()
-	qr.draawFoormatInformationString()
+	qr.drawDataBits()
+	qr.dataMasking()
+	qr.drawFormatInformationString()
 
 	if qr.Version >= 7 {
-		qr.draawVeersionInformationString()
+		qr.drawVersionInformationString()
 	}
 	return &qr, nil
 }
