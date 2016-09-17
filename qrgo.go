@@ -124,8 +124,6 @@ var (
 		"001010010011010011", "001011101111110110", "001100011101100010"}
 )
 
-var size int
-
 // Canonical integer max function.
 func max(a, b int) int {
 	if a >= b {
@@ -347,9 +345,6 @@ func encBytes(data string) string {
 	return encoding
 }
 
-// After encoding the data string it needs to be right-padded
-// until the length is a multiple of eight.
-// TODO commments
 func terminator(encoding string, version int) []byte {
 	length := len(encoding)
 	blocks := blockInfo[version][0]
@@ -470,8 +465,8 @@ func interleaveError(array []byte, numErr, numB1, numB2 int) []byte {
 // two upper and bottom-left corners.
 func (qr *QR) placeFinderPatterns() {
 	drawPattern(qr.Canvas, 0, 0, 7)
-	drawPattern(qr.Canvas, size-7, 0, 7)
-	drawPattern(qr.Canvas, 0, size-7, 7)
+	drawPattern(qr.Canvas, qr.Modules-7, 0, 7)
+	drawPattern(qr.Canvas, 0, qr.Modules-7, 7)
 }
 
 // A finder pattern is 7x7 square with a black border followed by
@@ -597,12 +592,6 @@ func (qr *QR) drawTimingPattern() {
 }
 
 // The dark module is always placed at coordinates ((4 * V) +9, 8)
-func drawDarkModule(canvas [][]*Cell, version int) {
-	r := (4 * version) + 9
-	canvas[r][8].color = 1
-	canvas[r][8].data = false
-}
-
 func (qr *QR) drawDarkModule() {
 	r := (4 * qr.Version) + 9
 	qr.Canvas[r][8].color = 1
@@ -952,7 +941,6 @@ func NewQR(data string) (*QR, error) {
 	qr.mode()
 	qr.version()
 	qr.Modules = ((qr.Version-1)*4 + 21)
-	size = qr.Modules
 
 	qr.Errors = blockInfo[qr.Version][1]
 	qr.Block1 = blockInfo[qr.Version][2]
